@@ -924,7 +924,7 @@ static uint8_t start_server(const void *cmd, uint16_t cmd_len,
 	}
 
 	rp->db_attr_off = sys_cpu_to_le16(0); /* TODO*/
-	rp->db_attr_cnt = svc_attr_count;
+	rp->db_attr_cnt = server_svcs[svc_count].attr_count;
 	*rsp_len = sizeof(*rp);
 
 	return BTP_STATUS_SUCCESS;
