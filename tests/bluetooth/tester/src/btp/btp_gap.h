@@ -434,6 +434,54 @@ struct btp_gap_decrypt_ead_adv_data_rp {
 	uint8_t decrypted_data[];
 } __packed;
 
+#define BTP_GAP_ADV_CONFIGURE 0x34
+struct btp_gap_adv_configure_cmd {
+	uint8_t id;
+	uint8_t sid;
+	uint8_t address_type;
+	uint8_t ad_type;
+	uint8_t primary_phy;
+	uint8_t secondary_phy;
+	uint8_t max_skip;
+	uint8_t coded_phy_options;
+	uint8_t filter_accept_list;
+	uint8_t directed_advertising;
+	uint16_t options;
+	uint32_t min_interval;
+	uint32_t max_interval;
+	uint8_t peer_address_type;
+	uint8_t peer_address[6];
+} __packed;
+
+struct btp_gap_adv_configure_rp {
+	uint8_t id;
+} __packed;
+
+#define BTP_GAP_ADV_DELETE 0x35
+struct btp_gap_adv_delete_cmd {
+	uint8_t id;
+} __packed;
+
+#define BTP_GAP_ADV_SET_DATA 0x36
+struct btp_gap_adv_set_data_cmd {
+	uint8_t id;
+	uint16_t data_len;
+	uint16_t scan_response_length;
+	uint8_t data[];
+} __packed;
+
+#define BTP_GAP_ADV_START 0x37
+struct btp_gap_adv_start_cmd {
+	uint8_t id;
+	uint16_t timeout;
+	uint8_t num_of_events;
+} __packed;
+
+#define BTP_GAP_ADV_STOP 0x38
+struct btp_gap_adv_stop_cmd {
+	uint8_t id;
+} __packed;
+
 /* events */
 #define BTP_GAP_EV_NEW_SETTINGS			0x80
 struct btp_gap_new_settings_ev {
@@ -619,6 +667,13 @@ struct btp_gap_periodic_biginfo_ev {
 	uint8_t encryption;
 } __packed;
 
+#define BTP_GAP_EV_ADV_TERMINATED 0x98
+struct btp_gap_adv_terminated_ev {
+	uint8_t id;
+	uint8_t address_type;
+	bt_addr_t peer_addr;
+} __packed;
+
 struct bt_le_per_adv_param;
 struct bt_le_per_adv_sync_param;
 struct bt_le_adv_param;
@@ -639,3 +694,112 @@ int tester_gap_padv_start(struct bt_le_ext_adv *ext_adv);
 int tester_gap_padv_stop(struct bt_le_ext_adv *ext_adv);
 int tester_gap_padv_create_sync(struct bt_le_per_adv_sync_param *create_params);
 int tester_gap_padv_stop_sync(void);
+
+/** Extended Advertiser Parameteres */
+
+/** Unknown Advertiser Set Index to create a new one */
+#define BT_LE_ADVERTISER_SET_IDX_NEW 0xff
+/** Maximum Advertiser Set ID (SID) */
+#define BT_LE_ADVERTISER_SID_MAX 15
+
+/** Address Type */
+enum {
+	/** Identity Address */
+	BT_LE_ADDR_IDENTITY = 0,
+	/** Random Address */
+	BT_LE_ADDR_RANDOM = 1,
+};
+
+/** Advertiser Type */
+enum {
+	/** Connectable */
+	BT_LE_ADVERTISER_TYPE_CONNECTABLE = BIT(0),
+	/* Scannable */
+	BT_LE_ADVERTISER_TYPE_SCANNABLE = BIT(1),
+	/* Extended advertising */
+	BT_LE_ADVERTISER_TYPE_EXTENDED = BIT(2),
+	/* Anonymous advertising */
+	BT_LE_ADVERTISER_TYPE_ANONYMOUS = BIT(3),
+	/* Advertising type mask */
+	BT_LE_ADVERTISER_TYPE_MASK = (BIT(0) | BIT(1) | BIT(2) | BIT(3))
+};
+
+/**
+ * Primary Advertising PHY
+ *
+ * Ignored if Extended Advertising is not used
+ */
+enum {
+	BT_LE_ADVERTISER_PRIMARY_PHY_1M = 0,
+	BT_LE_ADVERTISER_PRIMARY_PHY_CODED = 1,
+};
+
+/**
+ * Secondary Advertising PHY
+ *
+ * Ignored if Extended Advertising is not used
+ */
+enum {
+	BT_LE_ADVERTISER_SECONDARY_PHY_1M = 0,
+	BT_LE_ADVERTISER_SECONDARY_PHY_2M = 1,
+	BT_LE_ADVERTISER_SECONDARY_PHY_CODED = 2,
+};
+
+/** Coded PHY options */
+enum {
+	BT_LE_EXT_ADV_CODED_PHY_OPT_NONE = 0,
+	BT_LE_EXT_ADV_CODED_PHY_OPT_S2_PREFERRED = 1,
+	BT_LE_EXT_ADV_CODED_PHY_OPT_S8_PREFERRED = 2,
+	BT_LE_EXT_ADV_CODED_PHY_OPT_S2_REQUIRED = 3,
+	BT_LE_EXT_ADV_CODED_PHY_OPT_S8_REQUIRED = 4,
+};
+
+/** Filter Accept List options */
+enum {
+	/** Do not use the filter accept list */
+	BT_LE_FILTER_ACCEPT_LIST_DISABLED = 0,
+	/** Use the filter accept list for scanning */
+	BT_LE_FILTER_ACCEPT_LIST_IN_USE_FOR_SCANNING = BIT(0),
+	/** Use the filter accept list for connections */
+	BT_LE_FILTER_ACCEPT_LIST_IN_USE_FOR_CONNECTIONS = BIT(1),
+};
+
+/** Directed Advertising options */
+enum {
+	/** Do not use directed advertising */
+	BT_LE_DIRECTED_ADVERTISING_DISABLED = 0,
+	/** Use high duty directed advertising */
+	BT_LE_DIRECTED_ADVERTISING_HIGH_DUTY = 1,
+	/** Use low duty directed advertising */
+	BT_LE_DIRECTED_ADVERTISING_LOW_DUTY = 2
+};
+
+/** Advertising option for extended advertiser */
+enum {
+	/** Disable channel 37 for primary advertising */
+	BT_LE_EXT_ADV_OPT_DISABLE_CHAN_37 = BIT(0),
+
+	/** Disable channel 38 for primary advertising */
+	BT_LE_EXT_ADV_OPT_DISABLE_CHAN_38 = BIT(1),
+
+	/** Disable channel 39 for primary advertising */
+	BT_LE_EXT_ADV_OPT_DISABLE_CHAN_39 = BIT(2),
+
+	/* Include TX power in extended header */
+	BT_LE_EXT_ADV_OPT_USE_TX_POWER = BIT(3),
+
+	BR_LE_EXT_ADV_OPT_MASK = (BIT(0) | BIT(1) | BIT(2) | BIT(3))
+};
+
+/**
+ * Peer Address Type
+ *
+ * The Peer Address and Peer Address Type fields will be ignored if
+ * directed advertising is not used.
+ */
+enum {
+	/** Public */
+	BT_LE_EXT_PEER_ADDR_TYPE_PUBLIC = 0,
+	/** Random */
+	BT_LE_EXT_PEER_ADDR_TYPE_RANDOM = 1,
+};

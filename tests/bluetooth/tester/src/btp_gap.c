@@ -846,7 +846,7 @@ int tester_gap_create_adv_instance(struct bt_le_adv_param *param,
 	    BTP_GAP_SETTINGS_EXTENDED_ADVERTISING)) {
 
 		param->options |= BT_LE_ADV_OPT_EXT_ADV;
-		if (*ext_adv) {
+		if (ext_adv && *ext_adv) {
 			err = bt_le_ext_adv_stop(*ext_adv);
 			if (err != 0) {
 				return err;
@@ -879,7 +879,9 @@ int tester_gap_create_adv_instance(struct bt_le_adv_param *param,
 		err = bt_le_ext_adv_set_data(ext_adv_sets[index], ad, ad_len, sd_len ?
 					     sd : NULL, sd_len);
 
-		*ext_adv = ext_adv_sets[index];
+		if (ext_adv && *ext_adv) {
+			*ext_adv = ext_adv_sets[index];
+		}
 	}
 
 	return err;
@@ -2988,6 +2990,418 @@ static uint8_t ead_decrypt_data(const void *cmd, uint16_t cmd_len, void *rsp, ui
 }
 #endif /* defined(CONFIG_BT_EAD) */
 
+static void adv_sent(struct bt_le_ext_adv *adv, struct bt_le_ext_adv_sent_info *info)
+{
+	int idx;
+
+	/* Validata adv param and search in the list of known advertisers */
+	if (!adv) {
+		return;
+	}
+
+	for (idx = 0; idx < CONFIG_BT_EXT_ADV_MAX_ADV_SET; idx++) {
+		if (ext_adv_sets[idx] == adv) {
+			struct btp_gap_adv_terminated_ev ev;
+			memset(&ev, 0, sizeof(ev));
+			ev.id = idx;
+			tester_event(BTP_SERVICE_ID_GAP, BTP_GAP_EV_ADV_TERMINATED, &ev,
+				     sizeof(ev));
+			break;
+		}
+	}
+}
+
+static void adv_connected(struct bt_le_ext_adv *adv,
+			  struct bt_le_ext_adv_connected_info *info)
+{
+	int idx;
+
+	/* Validata adv param and search in the list of known advertisers */
+	if (!adv) {
+		return;
+	}
+
+	for (idx = 0; idx < CONFIG_BT_EXT_ADV_MAX_ADV_SET; idx++) {
+		if (ext_adv_sets[idx] == adv) {
+			struct btp_gap_adv_terminated_ev ev;
+			const bt_addr_le_t *dst;
+
+			ev.id = idx;
+			
+			/* Get peer address from connection using public API */
+			dst = bt_conn_get_dst(info->conn);
+			if (dst) {
+				ev.address_type = dst->type;
+				memcpy(&ev.peer_addr, &dst->a, sizeof(ev.peer_addr));
+			} else {
+				/* Fallback if dst is NULL */
+				ev.address_type = 0;
+				memset(&ev.peer_addr, 0, sizeof(ev.peer_addr));
+			}
+
+			tester_event(BTP_SERVICE_ID_GAP, BTP_GAP_EV_ADV_TERMINATED, &ev,
+				     sizeof(ev));
+			break;
+		}
+	}
+}
+
+static uint8_t ext_adv_configure(const void *cmd, uint16_t cmd_len, void *rsp, uint16_t *rsp_len)
+{
+	if (!IS_ENABLED(CONFIG_BT_EXT_ADV)) {
+		return BTP_STATUS_FAILED;
+	}
+
+	int err;
+	const struct btp_gap_adv_configure_cmd *cp = cmd;
+	uint8_t idx = 0;
+
+	struct btp_gap_adv_configure_rp *rp = rsp;
+	struct bt_le_ext_adv **adv = NULL;
+
+	static const struct bt_le_ext_adv_cb adv_cb = {
+		.sent = adv_sent,
+		.connected = adv_connected
+	};
+
+	if (cp->id == BT_LE_ADVERTISER_SET_IDX_NEW) {
+		/* Requested a new advertiser set, searching for an empty slot */
+		idx = tester_gap_ext_adv_idx_free_get();
+		if (idx < 0) {
+			/* No available slot */
+			return BTP_STATUS_FAILED;
+		}
+	} else {
+		/* Requested an existing advertiser set */
+		idx = cp->id;
+		if (idx >= CONFIG_BT_EXT_ADV_MAX_ADV_SET) {
+			return BTP_STATUS_FAILED;
+		}
+	}
+	adv = &ext_adv_sets[idx];
+
+	if ((cp->min_interval > cp->max_interval) || (cp->sid > BT_LE_ADVERTISER_SID_MAX)) {
+		return BTP_STATUS_FAILED;
+	}
+
+	struct bt_le_adv_param param = {
+		.id = BT_ID_DEFAULT,
+		.sid = cp->sid,
+		.interval_min = cp->min_interval,
+		.interval_max = cp->max_interval,
+		.secondary_max_skip = cp->max_skip,
+		.options = BT_LE_ADV_OPT_NONE,
+		.peer = NULL,
+	};
+
+	switch (cp->address_type) {
+	case BT_LE_ADDR_IDENTITY:
+		param.options |= BT_LE_ADV_OPT_USE_IDENTITY;
+		break;
+	case BT_LE_ADDR_RANDOM:
+		break;
+	default:
+		return BTP_STATUS_FAILED;
+	}
+
+	if ((cp->ad_type & ~BT_LE_ADVERTISER_TYPE_MASK)) {
+		return BTP_STATUS_FAILED;
+	}
+
+	if (cp->ad_type & BT_LE_ADVERTISER_TYPE_CONNECTABLE) {
+		param.options |= BT_LE_ADV_OPT_CONN;
+	}
+
+	if (cp->ad_type & BT_LE_ADVERTISER_TYPE_SCANNABLE) {
+		param.options |= BT_LE_ADV_OPT_SCANNABLE;
+	}
+
+	if (cp->ad_type & BT_LE_ADVERTISER_TYPE_EXTENDED) {
+		param.options |= BT_LE_ADV_OPT_EXT_ADV;
+	}
+
+	if (cp->ad_type & BT_LE_ADVERTISER_TYPE_ANONYMOUS) {
+		param.options |= BT_LE_ADV_OPT_ANONYMOUS;
+	}
+
+	if (!(param.options & BT_LE_ADV_OPT_EXT_ADV)) {
+		if (cp->primary_phy > BT_LE_ADVERTISER_PRIMARY_PHY_CODED) {
+			return BTP_STATUS_FAILED;
+		}
+
+		switch(cp->primary_phy) {
+		case BT_LE_ADVERTISER_PRIMARY_PHY_1M:
+			//param.options |= BT_LE_ADV_OPT_NO_2M;
+			break;
+		case BT_LE_ADVERTISER_PRIMARY_PHY_CODED:
+			param.options |= BT_LE_ADV_OPT_CODED;
+			break;
+		default:
+			return BTP_STATUS_FAILED;
+		}
+	} else {
+		switch (cp->secondary_phy) {
+		case BT_LE_ADVERTISER_SECONDARY_PHY_1M:
+			param.options |= BT_LE_ADV_OPT_NO_2M;
+			break;
+		case BT_LE_ADVERTISER_SECONDARY_PHY_2M:
+			/* Default, no need to set */
+			break;
+		case BT_LE_ADVERTISER_SECONDARY_PHY_CODED:
+			param.options |= BT_LE_ADV_OPT_CODED;
+			break;
+		default:
+			return BTP_STATUS_FAILED;
+		}
+	}
+
+	/* Handle Coded PHY options if Coded PHY is used */
+	if (param.options & BT_LE_ADV_OPT_CODED) {
+			switch (cp->coded_phy_options) {
+			case BT_LE_EXT_ADV_CODED_PHY_OPT_NONE:
+			case BT_LE_EXT_ADV_CODED_PHY_OPT_S2_PREFERRED:
+			case BT_LE_EXT_ADV_CODED_PHY_OPT_S8_PREFERRED:
+					/* No action needed - preferences not supported by Zephyr */
+					break;
+			case BT_LE_EXT_ADV_CODED_PHY_OPT_S2_REQUIRED:
+					param.options |= BT_LE_ADV_OPT_REQUIRE_S2_CODING;
+					break;
+			case BT_LE_EXT_ADV_CODED_PHY_OPT_S8_REQUIRED:
+					param.options |= BT_LE_ADV_OPT_REQUIRE_S8_CODING;
+					break;
+			default:
+					return BTP_STATUS_FAILED;
+			}
+	}
+
+	switch (cp->filter_accept_list) {
+	case BT_LE_FILTER_ACCEPT_LIST_DISABLED:
+		break;
+	case BT_LE_FILTER_ACCEPT_LIST_IN_USE_FOR_SCANNING:
+		param.options |= BT_LE_ADV_OPT_FILTER_SCAN_REQ;
+		break;
+	case BT_LE_FILTER_ACCEPT_LIST_IN_USE_FOR_CONNECTIONS:
+		param.options |= BT_LE_ADV_OPT_FILTER_CONN;
+		break;
+	case BT_LE_FILTER_ACCEPT_LIST_IN_USE_FOR_SCANNING | BT_LE_FILTER_ACCEPT_LIST_IN_USE_FOR_CONNECTIONS:
+		param.options |= (BT_LE_ADV_OPT_FILTER_SCAN_REQ | BT_LE_ADV_OPT_FILTER_CONN);
+		break;
+	default:
+		return BTP_STATUS_FAILED;
+	}
+
+	switch (cp->directed_advertising) {
+	case BT_LE_DIRECTED_ADVERTISING_DISABLED:
+		param.peer = NULL;
+		break;
+	case BT_LE_DIRECTED_ADVERTISING_LOW_DUTY:
+		param.options |= BT_LE_ADV_OPT_DIR_MODE_LOW_DUTY;
+		/* Intentional fallthrough */
+	case BT_LE_DIRECTED_ADVERTISING_HIGH_DUTY: {
+		bt_addr_le_t peer_address;
+
+		peer_address.type = cp->peer_address_type;
+		memcpy(peer_address.a.val, cp->peer_address, sizeof(peer_address.a.val));
+		param.peer = &peer_address;
+		break;
+	}
+	default:
+		return BTP_STATUS_FAILED;
+	}
+
+	/* Handle Options bitfield (channel disable and TX power) */
+	if (cp->options & BT_LE_EXT_ADV_OPT_DISABLE_CHAN_37) {
+			param.options |= BT_LE_ADV_OPT_DISABLE_CHAN_37;
+	}
+
+	if (cp->options & BT_LE_EXT_ADV_OPT_DISABLE_CHAN_38) {
+			param.options |= BT_LE_ADV_OPT_DISABLE_CHAN_38;
+	}
+
+	if (cp->options & BT_LE_EXT_ADV_OPT_DISABLE_CHAN_39) {
+			param.options |= BT_LE_ADV_OPT_DISABLE_CHAN_39;
+	}
+
+	if (cp->options & BT_LE_EXT_ADV_OPT_USE_TX_POWER) {
+			param.options |= BT_LE_ADV_OPT_USE_TX_POWER;
+	}
+
+	if (ext_adv_sets[idx]) {
+		err = bt_le_ext_adv_update_param(ext_adv_sets[idx], &param);
+	} else {
+		err = bt_le_ext_adv_create(&param, &adv_cb, adv);
+	}
+
+	if (err) {
+		return BTP_STATUS_FAILED;
+	}
+
+	rp->id = idx;
+	*rsp_len = sizeof(*rp);
+
+	return BTP_STATUS_SUCCESS;
+}
+
+static uint8_t ext_adv_delete(const void *cmd, uint16_t cmd_len, void *rsp, uint16_t *rsp_len)
+{
+	if (!IS_ENABLED(CONFIG_BT_EXT_ADV)) {
+		return BTP_STATUS_FAILED;
+	}
+
+	int err;
+	const struct btp_gap_adv_delete_cmd *cp = cmd;
+
+	uint8_t id = cp->id;
+
+	/* Invalid index or the set does not exist */
+	if ((id >= CONFIG_BT_EXT_ADV_MAX_ADV_SET) || (ext_adv_sets[id] == NULL)) {
+		return BTP_STATUS_FAILED;
+	}
+
+	err = bt_le_ext_adv_delete(ext_adv_sets[id]);
+	if (err) {
+		return BTP_STATUS_FAILED;
+	}
+
+	ext_adv_sets[id] = NULL;
+
+	return BTP_STATUS_SUCCESS;
+}
+
+static uint8_t ext_adv_set_data(const void *cmd, uint16_t cmd_len, void *rsp, uint16_t *rsp_len)
+{
+	if (!IS_ENABLED(CONFIG_BT_EXT_ADV)) {
+		return BTP_STATUS_FAILED;
+	}
+
+	int err;
+	const struct btp_gap_adv_set_data_cmd *cp = cmd;
+	struct bt_data ad[10];
+	struct bt_data sd[10];
+	uint8_t ad_idx;
+	uint8_t sd_idx;
+	size_t pos;
+
+	uint8_t id = cp->id;
+
+	if ((id >= CONFIG_BT_EXT_ADV_MAX_ADV_SET) || (ext_adv_sets[id] == NULL)) {
+		return BTP_STATUS_FAILED;
+	}
+
+	/* Size validation */
+	if ((cmd_len < sizeof(*cp)) ||
+	    (cmd_len != sizeof(*cp) + cp->data_len + cp->scan_response_length)) {
+		return BTP_STATUS_FAILED;
+	}
+
+	/* Iterate through the input data and pick up LTV triplets */
+	for (pos = 0, ad_idx = 0; pos < cp->data_len; ad_idx++) {
+		if (ad_idx >= ARRAY_SIZE(ad)) {
+			LOG_ERR("ad[] Out of memory");
+			return BTP_STATUS_FAILED;
+		}
+
+		uint8_t data_len = cp->data[pos++] - 1;
+
+		if (pos + data_len > cp->data_len) {
+			return BTP_STATUS_FAILED;
+		}
+
+		ad[ad_idx].type = cp->data[pos++];
+		ad[ad_idx].data_len = data_len;
+		ad[ad_idx].data = &cp->data[pos];
+		pos += data_len;
+	}
+
+	for (sd_idx = 0; pos < cp->data_len + cp->scan_response_length; sd_idx++) {
+		if (sd_idx >= ARRAY_SIZE(sd)) {
+			LOG_ERR("sd[] Out of memory");
+			return BTP_STATUS_FAILED;
+		}
+
+		uint8_t data_len = cp->data[pos++] - 1;
+
+		if (pos + data_len > cp->data_len + cp->scan_response_length) {
+			return BTP_STATUS_FAILED;
+		}
+
+		sd[sd_idx].type = cp->data[pos++];
+		sd[sd_idx].data_len = data_len;
+		sd[sd_idx].data = &cp->data[pos];
+		pos += data_len;
+	}
+
+	err = bt_le_ext_adv_set_data(ext_adv_sets[id], ad, ad_idx,
+				     sd_idx ? sd : NULL, sd_idx);
+	if (err) {
+		return BTP_STATUS_FAILED;
+	}
+
+	return BTP_STATUS_SUCCESS;
+}
+
+static uint8_t ext_adv_start(const void *cmd, uint16_t cmd_len, void *rsp, uint16_t *rsp_len)
+{
+	if (!IS_ENABLED(CONFIG_BT_EXT_ADV)) {
+		return BTP_STATUS_FAILED;
+	}
+
+	int err;
+	const struct btp_gap_adv_start_cmd *cp = cmd;
+
+	uint8_t id = cp->id;
+
+	/* Invalid index or the set does not exist */
+	if ((id >= CONFIG_BT_EXT_ADV_MAX_ADV_SET) || (ext_adv_sets[id] == NULL)) {
+		return BTP_STATUS_FAILED;
+	}
+
+	if (cp->timeout == 0 && cp->num_of_events == 0) {
+			err = bt_le_ext_adv_start(ext_adv_sets[id], BT_LE_EXT_ADV_START_DEFAULT);
+	} else {
+			struct bt_le_ext_adv_start_param start_param = {
+					.timeout = cp->timeout,
+					.num_events = cp->num_of_events
+			};
+			err = bt_le_ext_adv_start(ext_adv_sets[id], &start_param);
+	}
+	if (err != 0) {
+		LOG_ERR("Failed to start advertising");
+	}
+
+	if (err) {
+		return BTP_STATUS_FAILED;
+	}
+
+	return BTP_STATUS_SUCCESS;
+}
+
+static uint8_t ext_adv_stop(const void *cmd, uint16_t cmd_len, void *rsp, uint16_t *rsp_len)
+{
+	if (!IS_ENABLED(CONFIG_BT_EXT_ADV)) {
+		return BTP_STATUS_FAILED;
+	}
+
+	int err;
+	const struct btp_gap_adv_stop_cmd *cp = cmd;
+
+	uint8_t id = cp->id;
+
+	/* Invalid index or the set does not exist */
+	if ((id >= CONFIG_BT_EXT_ADV_MAX_ADV_SET) || (ext_adv_sets[id] == NULL)) {
+		return BTP_STATUS_FAILED;
+	}
+
+	err = bt_le_ext_adv_stop(ext_adv_sets[id]);
+	if (err) {
+		LOG_ERR("Failed to stop advertising");
+
+		return BTP_STATUS_FAILED;
+	}
+
+	return BTP_STATUS_SUCCESS;
+}
+
 static const struct btp_handler handlers[] = {
 	{
 		.opcode = BTP_GAP_READ_SUPPORTED_COMMANDS,
@@ -3133,6 +3547,31 @@ static const struct btp_handler handlers[] = {
 		.opcode = BTP_GAP_SET_EXTENDED_ADVERTISING,
 		.expect_len = sizeof(struct btp_gap_set_extended_advertising_cmd),
 		.func = set_extended_advertising,
+	},
+	{
+		.opcode = BTP_GAP_ADV_CONFIGURE,
+		.expect_len = sizeof(struct btp_gap_adv_configure_cmd),
+		.func = ext_adv_configure,
+	},
+	{
+		.opcode = BTP_GAP_ADV_DELETE,
+		.expect_len = sizeof(struct btp_gap_adv_delete_cmd),
+		.func = ext_adv_delete,
+	},
+	{
+		.opcode = BTP_GAP_ADV_SET_DATA,
+		.expect_len = BTP_HANDLER_LENGTH_VARIABLE,
+		.func = ext_adv_set_data,
+	},
+	{
+		.opcode = BTP_GAP_ADV_START,
+		.expect_len = sizeof(struct btp_gap_adv_start_cmd),
+		.func = ext_adv_start
+	},
+	{
+		.opcode = BTP_GAP_ADV_STOP,
+		.expect_len = sizeof(struct btp_gap_adv_stop_cmd),
+		.func = ext_adv_stop,
 	},
 #if defined(CONFIG_BT_PER_ADV)
 	{
